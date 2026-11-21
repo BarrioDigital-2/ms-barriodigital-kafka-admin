@@ -22,6 +22,8 @@ import org.apache.kafka.common.Node;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.config.ConfigResource;
 import org.springframework.stereotype.Service;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import java.util.Comparator;
 import java.util.HashMap;
@@ -66,7 +68,8 @@ public class KafkaAdminServiceImpl implements KafkaAdminService {
     public TopicResponse crearTopic(TopicRequest request) {
         validarNoInterno(request.getNombre());
 
-        // Solo se envían las configuraciones que vienen; el resto usa los valores por defecto de Kafka
+        // Solo se envían las configuraciones que vienen; el resto usa los valores por
+        // defecto de Kafka
         Map<String, String> configuracion = new HashMap<>();
         if (request.getCleanupPolicy() != null) {
             configuracion.put("cleanup.policy", request.getCleanupPolicy());
@@ -77,7 +80,8 @@ public class KafkaAdminServiceImpl implements KafkaAdminService {
 
         NewTopic topic = new NewTopic(request.getNombre(), request.getParticiones(), request.getReplicas().shortValue())
                 .configs(configuracion);
-        // Si ya existe → TopicExistsException (409); si hay más réplicas que brokers → 400
+        // Si ya existe → TopicExistsException (409); si hay más réplicas que brokers →
+        // 400
         esperar(adminClient.createTopics(List.of(topic)).all());
 
         return new TopicResponse(request.getNombre(), request.getParticiones(), request.getReplicas(), configuracion);
@@ -105,23 +109,30 @@ public class KafkaAdminServiceImpl implements KafkaAdminService {
             throw new RecursoNoEncontradoException("No existe el consumer group " + groupId);
         }
 
-        // 1. Hasta dónde leyó el grupo en cada partición
-        Map<TopicPartition, OffsetAndMetadata> leidos =
-                esperar(adminClient.listConsumerGroupOffsets(groupId).partitionsToOffsetAndMetadata());
+        // 1. Hasta dónde leyó el grupo (Kafka solo trae las particiones donde ya leyó
+        // algo)
+        Map<TopicPartition, OffsetAndMetadata> leidos = esperar(
+                adminClient.listConsumerGroupOffsets(groupId).partitionsToOffsetAndMetadata());
 
-        // 2. Último offset de esas mismas particiones
+        // 2. TODAS las particiones de esos topics, incluidas las que el grupo nunca ha
+        // leído
+        Set<String> topics = leidos.keySet().stream().map(TopicPartition::topic).collect(Collectors.toSet());
         Map<TopicPartition, OffsetSpec> consulta = new HashMap<>();
-        leidos.keySet().forEach(particion -> consulta.put(particion, OffsetSpec.latest()));
-        Map<TopicPartition, ListOffsetsResult.ListOffsetsResultInfo> ultimos =
-                esperar(adminClient.listOffsets(consulta).all());
+        esperar(adminClient.describeTopics(topics).allTopicNames()).values().forEach(topic -> topic.partitions()
+                .forEach(p -> consulta.put(new TopicPartition(topic.name(), p.partition()), OffsetSpec.latest())));
 
-        // 3. Lag = último - leído
-        return leidos.entrySet().stream()
-                .filter(e -> e.getValue() != null)
-                .map(e -> {
-                    long leido = e.getValue().offset();
-                    long ultimo = ultimos.get(e.getKey()).offset();
-                    return new LagResponse(e.getKey().topic(), e.getKey().partition(), leido, ultimo, ultimo - leido);
+        // 3. Último offset de cada partición
+        Map<TopicPartition, ListOffsetsResult.ListOffsetsResultInfo> ultimos = esperar(
+                adminClient.listOffsets(consulta).all());
+
+        // 4. Lag = último - leído (si el grupo nunca leyó esa partición, leído = 0)
+        return consulta.keySet().stream()
+                .map(particion -> {
+                    OffsetAndMetadata leido = leidos.get(particion);
+                    long offsetLeido = leido != null ? leido.offset() : 0;
+                    long ultimo = ultimos.get(particion).offset();
+                    return new LagResponse(particion.topic(), particion.partition(), offsetLeido, ultimo,
+                            ultimo - offsetLeido);
                 })
                 .sorted(Comparator.comparing(LagResponse::getTopic).thenComparing(LagResponse::getParticion))
                 .toList();
@@ -134,11 +145,14 @@ public class KafkaAdminServiceImpl implements KafkaAdminService {
         List<String> brokers = esperar(cluster.nodes()).stream()
                 .map(nodo -> nodo.id() + " - " + nodo.host() + ":" + nodo.port())
                 .toList();
-        return new ClusterResponse(esperar(cluster.clusterId()), controlador.host() + ":" + controlador.port(), brokers);
+        return new ClusterResponse(esperar(cluster.clusterId()), controlador.host() + ":" + controlador.port(),
+                brokers);
     }
 
-    // AdminClient responde con "futuros": get() espera la respuesta y saca la excepción real de Kafka
-    // del envoltorio ExecutionException, para que GlobalExceptionHandler la reconozca
+    // AdminClient responde con "futuros": get() espera la respuesta y saca la
+    // excepción real de Kafka
+    // del envoltorio ExecutionException, para que GlobalExceptionHandler la
+    // reconozca
     private <T> T esperar(KafkaFuture<T> futuro) {
         try {
             return futuro.get();
@@ -158,7 +172,8 @@ public class KafkaAdminServiceImpl implements KafkaAdminService {
         return topic.partitions().get(0).replicas().size();
     }
 
-    // Los topics que empiezan con "_" son internos de Kafka (ej. __consumer_offsets)
+    // Los topics que empiezan con "_" son internos de Kafka (ej.
+    // __consumer_offsets)
     private void validarNoInterno(String nombre) {
         if (nombre.startsWith("_")) {
             throw new OperacionNoPermitidaException("No se permite modificar topics internos de Kafka: " + nombre);
