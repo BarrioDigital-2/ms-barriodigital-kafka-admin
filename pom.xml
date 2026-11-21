@@ -11,8 +11,9 @@
 	<groupId>cl.duoc</groupId>
 	<artifactId>ms-barriodigital-kafka-admin</artifactId>
 	<version>0.0.1-SNAPSHOT</version>
-	<name/>
-	<description/>
+	<name>ms-barriodigital-kafka-admin</name>
+	<description>API de administración de Kafka para BarrioDigital</description>
+
 	<url/>
 	<licenses>
 		<license/>
