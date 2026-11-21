@@ -12,7 +12,7 @@ Equivalente a `ms-barriodigital-rabbit-admin`, pero para Kafka.
 ## Cómo levantar (local)
 
 ```powershell
-# 1. Infraestructura (Kafka en localhost:9092), desde ms-barriodigital-notifications
+# 1. Infraestructura (Kafka en localhost:9092), desde barriodigital-infra/local
 docker compose up -d
 
 # 2. Este microservicio
